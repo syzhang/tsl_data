@@ -1,2 +1,2 @@
-# tsl_data
-TSL data for colab
+# TSL project behavioural data
+TSL data for colab use.
