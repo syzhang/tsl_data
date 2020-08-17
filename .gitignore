@@ -1,0 +1,6 @@
+TSL_source/
+TSL_derivatives/
+TSL_workdir/
+notebooks/
+__pycache__/
+.ipynb_checkpoints/
