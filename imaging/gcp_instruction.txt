@@ -1,0 +1,4 @@
+### running on GCP
+docker run -it --rm -v ~/data/TSL_fmriprep/:/data -v ~/tsl_data/:/tsl_data -
+v ~/data/TSL_smooth/:/output -p 8000:8000 --workdir /tsl_data miykael/nipype_tutorial jupyter notebook --ip 0.0.0.0 --no-browser --port=8000 --allow-root
+(must chown mounted volume to match id inside the container, otherwise there's no write permission)
