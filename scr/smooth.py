@@ -28,8 +28,8 @@ def define_workflow(subject_list, run_list, experiment_dir, output_dir):
     smooth = Node(Smooth(fwhm=[8,8,8]), name="smooth")
     
     # Mask - applying mask to smoothed
-    mask_func = Node(ApplyMask(output_type='NIFTI'),
-                    name="mask_func")
+    # mask_func = Node(ApplyMask(output_type='NIFTI'),
+                    # name="mask_func")
     
     # Infosource - a function free node to iterate over the list of subject names
     infosource = Node(IdentityInterface(fields=['subject_id','run_num']),
@@ -65,13 +65,20 @@ def define_workflow(subject_list, run_list, experiment_dir, output_dir):
     preproc.base_dir = opj(experiment_dir, working_dir)
     
     # Connect all components of the preprocessing workflow (spm smooth)
-    preproc.connect([(infosource, selectfiles, [('subject_id', 'subject_id'),
-                                           ('run_num', 'run_num')]),
+    preproc.connect([(infosource, selectfiles, [('subject_id', 'subject_id'),('run_num', 'run_num')]),
                  (selectfiles, extract, [('func', 'in_file')]),
                  (extract, smooth, [('roi_file', 'in_files')]),
                  (smooth, datasink, [('smoothed_files', 'preproc.@smooth')])
                 ])
     return preproc
+
+def list_subject(data_dir='/data'):
+    """list all available subjects"""
+    sj_ls = []
+    for f in os.listdir(data_dir):
+        if f.startswith('sub') and (not f.endswith('.html')):
+            sj_ls.append(f.split('-')[1])
+    return sj_ls
 
 if __name__ == '__main__':
     experiment_dir = '/output'
@@ -79,11 +86,10 @@ if __name__ == '__main__':
     working_dir = 'workingdir'
     data_dir = '/data'
 
-    for sj in ['06', '29']:
+    for sj in list_subject(data_dir=data_dir):
         fl = []
         for f in os.listdir('/data/sub-'+sj+'/func'):
             if f.endswith('bold.nii.gz'):
-    #             print(f)
                 fl.append(f[20])
         print(f'subject %s has %s sessions.' % (sj, fl))
         # run
