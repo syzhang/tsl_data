@@ -15,7 +15,8 @@ import pandas as pd
 import nibabel
 import matplotlib.pyplot as plt
 
-def first_level(TR):
+def first_level(TR, contrast_list, subject_list, 
+                experiment_dir, output_dir):
     """define first level model"""
     # SpecifyModel - Generates SPM-specific Model
     modelspec = Node(SpecifySPMModel(concatenate_runs=False,
@@ -45,6 +46,144 @@ def first_level(TR):
                                 function=subjectinfo),
                         name='getsubjectinfo')
 
+    # Infosource - a function free node to iterate over the list of subject names
+    infosource = Node(IdentityInterface(fields=['subject_id',
+                                                'contrasts'],
+                                        contrasts=contrast_list),
+                    name="infosource")
+    infosource.iterables = [('subject_id', subject_list)]
+
+    # SelectFiles - to grab the data (alternativ to DataGrabber)
+    smooth_dir = opj(experiment_dir, 'smooth_nomask', 'preproc')
+    templates = {'func': opj(smooth_dir, 'sub-{subject_id}',
+                            '*run-*_fwhm-8_bold.nii')}
+
+    selectfiles = Node(SelectFiles(templates,
+                                base_directory=experiment_dir,
+                                sort_filelist=True),
+                    name="selectfiles")
+
+    # Datasink - creates output folder for important outputs
+    datasink = Node(DataSink(base_directory=experiment_dir,
+                            container=output_dir),
+                    name="datasink")
+
+    # Use the following DataSink output substitutions
+    substitutions = [('_subject_id_', 'sub-')]
+    datasink.inputs.substitutions = substitutions
+
+    # Initiation of the 1st-level analysis workflow
+    l1analysis = Workflow(name='l1analysis')
+    l1analysis.base_dir = opj(experiment_dir, working_dir)
+
+    # Connect up the 1st-level analysis components
+    l1analysis.connect([(infosource, selectfiles, [('subject_id', 'subject_id')]),
+                        (infosource, getsubjectinfo, [('subject_id',
+                                                    'subject_id')]),
+                        (getsubjectinfo, modelspec, [('subject_info',
+                                                    'subject_info')]),
+                        (infosource, level1conest, [('contrasts', 'contrasts')]),
+                        (selectfiles, modelspec, [('func', 'functional_runs')]),
+                        (modelspec, level1design, [('session_info',
+                                                    'session_info')]),
+                        (level1design, level1estimate, [('spm_mat_file',
+                                                        'spm_mat_file')]),
+                        (level1estimate, level1conest, [('spm_mat_file',
+                                                        'spm_mat_file'),
+                                                        ('beta_images',
+                                                        'beta_images'),
+                                                        ('residual_image',
+                                                        'residual_image')]),
+                        (level1conest, datasink, [('spm_mat_file', '1stLevel.@spm_mat'),
+                                                ('spmT_images', '1stLevel.@T'),
+                                                ('con_images', '1stLevel.@con'),
+                                                ('spmF_images', '1stLevel.@F'),
+                                                ('ess_images', '1stLevel.@ess'),
+                                                ]),
+                        ])
+    return l1analysis
+
+def second_level(contrast_list, experiment_dir, output_dir, mask_path='/data/group_mask.nii.gz'):
+    """define second level model"""
+    # Gunzip - unzip the mask image
+    gunzip = Node(Gunzip(in_file=mask_path), name="gunzip")
+
+    # OneSampleTTestDesign - creates one sample T-Test Design
+    onesamplettestdes = Node(OneSampleTTestDesign(),
+                            name="onesampttestdes")
+
+    # EstimateModel - estimates the model
+    level2estimate = Node(EstimateModel(estimation_method={'Classical': 1}),name="level2estimate")
+
+    # EstimateContrast - estimates group contrast
+    level2conestimate = Node(EstimateContrast(group_contrast=True),
+                            name="level2conestimate")
+    cont1 = ['Group', 'T', ['mean'], [1]]
+    level2conestimate.inputs.contrasts = [cont1]
+
+    # Threshold - thresholds contrasts
+    level2thresh = Node(Threshold(contrast_index=1,
+                                use_topo_fdr=True,
+                                # use_fwe_correction=True,
+                                use_fwe_correction=False,
+                                extent_threshold=0,
+                                height_threshold=0.001,
+                                height_threshold_type='p-value',
+                                extent_fdr_p_threshold=0.05),
+                        name="level2thresh")
+
+    # Infosource - a function free node to iterate over the list of subject names
+    infosource = Node(IdentityInterface(fields=['contrast_id']),
+                    name="infosource")
+    infosource.iterables = [('contrast_id', contrast_list)]
+
+    # SelectFiles - to grab the data (alternativ to DataGrabber)
+    firstlev_dir = opj(experiment_dir, '1stLevel_nomask', '1stLevel')
+    templates = {'cons': opj(firstlev_dir, 'sub-*',
+                            '{contrast_id}.nii')}
+    selectfiles = Node(SelectFiles(templates,
+                                base_directory=experiment_dir,
+                                sort_filelist=True),
+                    name="selectfiles")
+
+    # Datasink - creates output folder for important outputs
+    datasink = Node(DataSink(base_directory=experiment_dir,
+                            container=output_dir),
+                    name="datasink")
+
+    # Use the following DataSink output substitutions
+    substitutions = [('_contrast_id_', '')]
+    datasink.inputs.substitutions = substitutions
+
+    # Initiation of the 2nd-level analysis workflow
+    l2analysis = Workflow(name='l2analysis')
+    l2analysis.base_dir = opj(experiment_dir, working_dir)
+
+    # Connect up the 2nd-level analysis components
+    l2analysis.connect([(infosource, selectfiles, [('contrast_id', 'contrast_id')]),
+                        (selectfiles, onesamplettestdes, [('cons', 'in_files')]),
+                        (gunzip, onesamplettestdes, [('out_file',
+                                                    'explicit_mask_file')]),
+                        (onesamplettestdes, level2estimate, [('spm_mat_file', 'spm_mat_file')]),
+                        (level2estimate, level2conestimate, [('spm_mat_file', 'spm_mat_file'),
+                        ('beta_images', 'beta_images'),
+                        ('residual_image', 'residual_image')]),
+                        (level2conestimate, level2thresh, [('spm_mat_file',
+                                                            'spm_mat_file'),
+                                                        ('spmT_images',
+                                                            'stat_image'),
+                                                        ]),
+                        (level2conestimate, datasink, [('spm_mat_file',
+                                                        '2ndLevel.@spm_mat'),
+                                                    ('spmT_images',
+                                                        '2ndLevel.@T'),
+                                                    ('con_images',
+                                                        '2ndLevel.@con')]),
+                        (level2thresh, datasink, [('thresholded_map',
+                                                '2ndLevel.@threshold')]),
+                        ])
+    return l2analysis
+
 def subjectinfo(subject_id):
     """define individual subject info"""
     import pandas as pd
@@ -62,13 +201,17 @@ def subjectinfo(subject_id):
         sj_info_cond = sj_info[sj_info['trial_type']==cond_name]
         return sj_info_cond
 
-    def select_confounds(subject_id, run_num, conf_names):
-        """select confounds for regressor"""
+    def select_confounds(subject_id, run_num):
+        """import confounds tsv files"""
         confounds_dir = f'/data/sub-%02d/func/' % int(subject_id)
-        confounds_file = confounds_dir+f'sub-%02d_task-tsl_run-%d_desc-confounds_regressors.tsv' % (int(subject_id), int(run_num))
+        confounds_file = confounds_dir+f'sub-%02d_task-tsl_run-%d_desc-confounds_timeseries.tsv' % (int(subject_id), int(run_num))
         conf_df = pd.read_csv(confounds_file, sep='\t')
-        conf_select = conf_df[conf_names].loc[4:].fillna(0)
-        conf_select_list = [conf_select[col].values.tolist() for col in conf_select] # ignore first 4 dummy scans
+        return conf_df
+
+    def confounds_regressor(conf_df, conf_names):
+        """select confounds for regressors"""
+        conf_select = conf_df[conf_names].loc[4:].fillna(0) # ignore first 4 dummy scans
+        conf_select_list = [conf_select[col].values.tolist() for col in conf_select] 
         return conf_select_list
 
     def find_runs(subject_id):
@@ -84,14 +227,11 @@ def subjectinfo(subject_id):
         return sorted(runs)
     
     conf_names = ['csf','white_matter','global_signal',
-    'std_dvars','dvars', 'framewise_displacement', 'rmsd',
-    'a_comp_cor_00', 'a_comp_cor_01', 'a_comp_cor_02', 'a_comp_cor_03',
-    'a_comp_cor_04', 'a_comp_cor_05', 
+    'dvars','std_dvars','framewise_displacement', 'rmsd',
+    'a_comp_cor_00', 'a_comp_cor_01', 'a_comp_cor_02', 'a_comp_cor_03', 'a_comp_cor_04', 'a_comp_cor_05', 'cosine00', 'cosine01', 'cosine02', 'cosine03', 'cosine04', 'cosine05',
     'trans_x', 'trans_y', 'trans_z', 'rot_x','rot_y','rot_z']
-#     't_comp_cor_00', 't_comp_cor_01', 't_comp_cor_02',
-                      #'motion_outlier00', 'motion_outlier01','motion_outlier02', 'motion_outlier03']
 
-    alltrialinfo = pd.read_csv('/tsl_data/data/fmri_behavioural.csv')
+    alltrialinfo = pd.read_csv('/code/data/fmri_behavioural_new.csv')
     alltrialinfo.head()
     
     subject_info = []
@@ -108,7 +248,8 @@ def subjectinfo(subject_id):
     subject_info = []
     for r in range(len(runs)):
         onsets = [onset_list[r*2], onset_list[r*2+1]]
-        regressors = select_confounds(subject_id, runs[r], conf_names)
+        regressors_all = select_confounds(subject_id, runs[r])
+        regressors = confounds_regressor(regressors_all, conf_names)
 
         subject_info.insert(r,
                            Bunch(conditions=condition_names,
@@ -131,8 +272,8 @@ def select_confounds(subject_id, run_num):
 
 def confounds_regressor(conf_df, conf_names):
     """select confounds for regressors"""
-    conf_select = conf_df[conf_names].loc[4:].fillna(0)
-    conf_select_list = [conf_select[col].values.tolist() for col in conf_select] # ignore first 4 dummy scans
+    conf_select = conf_df[conf_names].loc[4:].fillna(0) # ignore first 4 dummy scans
+    conf_select_list = [conf_select[col].values.tolist() for col in conf_select] 
     return conf_select_list
 
 def list_subject(data_dir='/data'):
@@ -157,17 +298,35 @@ def find_runs(subject_id):
 
 
 if __name__ == "__main__":
-    experiment_dir = '/output'
-    output_dir = 'smooth_nomask'
-    working_dir = 'workingdir'
     data_dir = '/data'
     code_dir = '/code'
+    experiment_dir = '/output'
+    output_1st_dir = '1stLevel_nomask'
+    # output_2nd_dir = '2ndLevel_masked'
+    output_2nd_dir = '2ndLevel_masked_FDR0001'
+    working_dir = 'workingdir'
+    
+    # define experiment info
+    TR = 2.
+    subject_list = list_subject(data_dir=data_dir)
 
-    alltrialinfo = pd.read_csv('/code/data/fmri_behavioural_new.csv')
-    for sj in list_subject(data_dir=data_dir):
-    # for sj in ['06']:
-        runs = find_runs(sj)
-        for run in runs:
-            df_tmp = select_confounds(sj, run)
-            tmp = df_tmp.filter(regex='outlier')
-            print(f'subject %s (run %s) confounds shape %d x %d' % (str(sj), str(run), tmp.shape[0], tmp.shape[1]))
+    # define contrasts
+    # condition names
+    condition_names = ['High','Low']
+    # contrasts
+    cont01 = ['average', 'T', condition_names, [.5, .5]]
+    cont02 = ['High',    'T', condition_names, [1, 0]]
+    cont03 = ['Low',     'T', condition_names, [0, 1]]
+    cont04 = ['High>Low','T', condition_names, [1,-1]]
+    cont05 = ['Low>High','T', condition_names, [-1,1]]
+    contrast_list = [cont01, cont02, cont03, cont04, cont05]
+
+    # run first level
+    # l1analysis = first_level(TR, contrast_list, subject_list, 
+    #             experiment_dir, output_1st_dir)
+    # l1analysis.run('MultiProc')
+
+    # run second level
+    conname_lsit = ['con_0001', 'con_0002', 'con_0003', 'con_0004', 'con_0005']
+    l2analysis = second_level(conname_lsit, experiment_dir, output_2nd_dir, mask_path='/data/group_mask.nii.gz')
+    l2analysis.run('MultiProc')
